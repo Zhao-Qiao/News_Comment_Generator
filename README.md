@@ -1,1 +1,8 @@
-# News_Commennts_Generator
+# News Comments Generator
+## 目录结构：
+请根据file_structure.txt内提供的目录结构组织工作目录。缺失的目录请通过群中源文档自行添加
+
+
+使用github托管的文件请查看代码仓库。。。里面的都是托管的。。。没托管的应该是不用编辑的。。。  
+没托管的就扔在本地别动了。。。我打印文件结构的插件好像有点问题，写到markdown里格式巨乱。。。
+先这样吧。。。

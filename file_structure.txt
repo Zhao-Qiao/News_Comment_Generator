@@ -1,0 +1,62 @@
+.
+├── AF_LSTM.py
+├── DataLoader_s2s.py
+├── README.md
+├── Untitled.ipynb
+├── Word2Vec
+│   ├── Word2vec.w2v
+│   ├── word_embedding
+│   ├── word_embedding.trainables.syn1neg.npy
+│   └── word_embedding.wv.vectors.npy
+├── data
+│   ├── generate_data
+│   │   ├── entertainment_data
+│   │   │   ├── entertainment_49500_2-gram_labelFre.json
+│   │   │   ├── entertainment_test_49500_2gram.json
+│   │   │   ├── entertainment_train_49500_2gram.json
+│   │   │   ├── entertainment_vnames_list_50000.txt
+│   │   │   ├── entertainment_vocab_49500_2gram.txt
+│   │   │   └── pretrained_weight_entertainment_vocab_49500_2gram.npy
+│   │   └── sport_data
+│   │       ├── pretrained_weight_sport_vocab_49500_2gram.npy
+│   │       ├── sport_49500_2-gram_labelFre.json
+│   │       ├── sport_49500_2-gram_vnames_list.txt
+│   │       ├── sport_test_49500_2gram.json
+│   │       ├── sport_train_49500_2gram.json
+│   │       └── sport_vocab_49500_2gram.txt
+│   └── sentiment_data
+│       ├── entertainment_data
+│       │   ├── entertainment_dev.json
+│       │   ├── entertainment_sentiment_vocab.txt
+│       │   ├── entertainment_test.json
+│       │   ├── entertainment_train.json
+│       │   ├── entertainment_vname.txt
+│       │   └── pretrained_weight_entertainment_sentiment_vocab.npy
+│       └── sport_data
+│           ├── pretrained_weight_sport_sentiment_vocab.npy
+│           ├── sport_dev.json
+│           ├── sport_sentiment_vocab.txt
+│           ├── sport_test.json
+│           ├── sport_train.json
+│           └── sport_vname.txt
+├── entertainment_ckpt
+│   ├── GModel_steps_100000.pkl
+│   ├── GModel_steps_150000.pkl
+│   ├── GModel_steps_200000.pkl
+│   ├── GModel_steps_250000.pkl
+│   ├── GModel_steps_300000.pkl
+│   └── GModel_steps_50000.pkl
+├── file_structure.txt
+├── inference.ipynb
+├── inference.py
+├── model.py
+├── senti_ckpt
+│   ├── entertainment_AFLSTM.pt
+│   └── sport_AFLSTM.pt
+├── sport_ckpt
+├── train_s2s.py
+└── utils
+    ├── Word2Vec_emb.py
+    └── vocabulary.py
+
+12 directories, 47 files
