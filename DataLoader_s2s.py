@@ -7,7 +7,44 @@ import sys
 from utils.vocabulary import Vocab
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
+import dgl
+import numpy as np
+from collections import Counter
+import math
+def tfcaculate(word, news):
+    result = Counter(news)
+    num = result[word]
+    return num/len(news)
 
+
+# 计算word在全局的idf
+def idfcaculate(word, news_list):
+    num = 0
+    for s in news_list:
+        if word in s:
+            num += 1
+    return math.log(len(news_list) / (num + 1))
+
+    # 按照news id列表创建每一个单词的在当前new下的tfidf
+
+def creattfidf(news_lists):
+    tfidf_list=[]
+    count = 0
+    for news_list in news_lists:
+        w2s_w = {}
+        countj = 0
+        for new in news_list:
+            sent_tfw = {}
+            for word in new:
+                tfidf = tfcaculate(word, new) * idfcaculate(word, news_list)
+                sent_tfw[word] = tfidf
+            w2s_w[countj] = sent_tfw
+            countj+=1
+        tfidf_list.append(w2s_w)
+        count += 1
+        if count % 5 == 0:
+            print("step:", count)
+    return tfidf_list
 
 def jsonfreqread(freq_path,vocab):
     file = open(freq_path, 'r', encoding='utf-8')
@@ -30,6 +67,7 @@ def jsonloader(filename,flag):
     label_list=[]#评论
     title_list=[]#标题
     # no use
+    title_score_list = []# sentiment score of news story
     label_score_list=[]#评论情感分数
     for line in file.readlines():
         pop_dict = json.loads(line)
@@ -50,8 +88,8 @@ def jsonloader(filename,flag):
         else:
             label=pop_dict['label']
         title=pop_dict['title']
-        #label_score=pop_dict['label_score']
-
+        label_score=pop_dict['label_score']
+        title_score = pop_dict['title_score']
 
         news_list.append(newlist)
         date_list.append(date)
@@ -59,8 +97,57 @@ def jsonloader(filename,flag):
         vnames_list.append(vnames)
         label_list.append(label)
         title_list.append(title)
-        #label_score_list.append(label_score)
-    return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list
+        label_score_list.append(label_score)
+        title_score_list.append(title_score)
+    return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list,title_score_list
+
+
+class Examplegnn(object):  # 一个新闻--->若干句子&词--->构图，node-word&sentence，边word2sent，sent2word
+    # a news-a graph
+    # no entity
+    """Class representing a train/val/test example for single-document extractive summarization."""
+    def __init__(self, news, vocab, sent_max_len, label, time_list):
+        """ Initializes the Example, performing tokenization and truncation to produce the encoder, decoder and target sequences, which are stored in self.
+        #news 一个新闻文本，包含若干句子
+        :param article_sents: list(strings) for single document or list(list(string)) for multi-document; one per article sentence. each token is separated by a single space.
+        :param vocab: Vocabulary object
+        :param sent_max_len: int, max length of each sentence
+        :param label: float, the popularity of this news
+        """
+        self.sent_max_len = sent_max_len
+        self.enc_sent_len = []
+        self.enc_sent_input = []
+        self.enc_sent_input_pad = []
+
+        # Store the original strings
+        self.original_article_sents = news
+
+        # Process the mews
+        for sent in self.original_article_sents:
+            article_words = sent
+            self.enc_sent_len.append(len(article_words))  # store the length before padding
+            self.enc_sent_input.append([vocab.word2id(w) for w in
+                                        article_words])  # list of word ids; OOVs are represented by the id for UNK token
+
+        self._pad_encoder_input(vocab.word2id('[PAD]'))  # pad操作
+        # Store the label
+        self.label = label  # 值
+        self.time_list = time_list  # time
+
+    def _pad_encoder_input(self, pad_id):
+        """
+        :param pad_id: int; token pad id
+        :return:
+        """
+        max_len = self.sent_max_len
+        for i in range(len(self.enc_sent_input)):
+            article_words = self.enc_sent_input[i].copy()
+            if len(article_words) > max_len:
+                article_words = article_words[:max_len]
+            if len(article_words) < max_len:
+                article_words.extend([pad_id] * (max_len - len(article_words)))
+            self.enc_sent_input_pad.append(article_words)
+
 
 class Exampledataset(Dataset):
     def __init__(self, data_file,vocab,senti_vocab,flag,freq_path=None):
@@ -71,16 +158,19 @@ class Exampledataset(Dataset):
         self.senti_vocab = senti_vocab
         self.data_root = data_file
         #----------read process-----------
-        self.entity_list,self.news_list, time_lists, \
+        self.entity_list,self.news_list, self.time_list, \
         self.vnames_list ,\
         self.label_list,\
         self.label_score_list,\
-        self.title_list= jsonloader(data_file,flag)
+        self.title_list,\
+        self.title_score_list = jsonloader(data_file,flag)
         if freq_path!=None:
             self.word2freq=jsonfreqread(freq_path,vocab)
 
         if flag=="valid":
             self.label_list=self.changenews2list(self.label_list)
+
+        self.tfidf_list = creattfidf(news_lists=self.news_list)
 
         #----------data preprocess--------
         # self.news_list = self.changenews2list(news_list)
@@ -134,11 +224,122 @@ class Exampledataset(Dataset):
             cur_news_list.append(news_token)
         return cur_news_list
 
+
+    def pad_label_m(self, label_matrix):
+        label_m = label_matrix[:self.doc_max_timesteps, :self.doc_max_timesteps]
+        N, m = label_m.shape
+        if m < self.doc_max_timesteps:
+            pad_m = np.zeros((N, self.doc_max_timesteps - m))
+            return np.hstack([label_m, pad_m])
+        return label_m
+
+    def AddWordNode(self, G, inputid):
+        wid2nid = {}
+        nid2wid = {}
+        nid = 0
+        for sentid in inputid:
+            for wid in sentid:
+                if wid not in wid2nid.keys():
+                    wid2nid[wid] = nid
+                    nid2wid[nid] = wid
+                    nid += 1
+
+        w_nodes = len(nid2wid)
+
+        G.add_nodes(w_nodes)
+        G.set_n_initializer(dgl.init.zero_initializer)
+        G.ndata["unit"] = torch.zeros(w_nodes)
+        G.ndata["id"] = torch.LongTensor(list(nid2wid.values()))
+        G.ndata["dtype"] = torch.zeros(w_nodes)
+        return wid2nid, nid2wid
+
+    def catWordNode(self, inputid):
+        wid2nid = {}
+        nid2wid = {}
+        nid = 0
+        for sentid in inputid:
+            for wid in sentid:
+                if wid not in wid2nid.keys():
+                    wid2nid[wid] = nid
+                    nid2wid[nid] = wid
+                    nid += 1
+        return wid2nid, nid2wid
+
+    def get_entity_dict(self, inputid, entity_list, vocab):
+        entity_dict = []
+        for sentid in inputid:
+            for wid in sentid:
+                if vocab.id2word(wid) in entity_list:
+                    entity_dict.append(wid)
+        return entity_dict
+
+    def Create_contentGraph(self, input_pad, w2s_w , label,time_list):
+        G = dgl.DGLGraph()  # content graph
+        wid2nid, nid2wid = self.AddWordNode(G, input_pad)
+        w_nodes = len(nid2wid)
+        # print(wid2nid,nid2wid)
+        N = len(input_pad)
+        G.add_nodes(N)
+        G.ndata["unit"][w_nodes:] = torch.ones(N)
+        G.ndata["dtype"][w_nodes:] = torch.ones(N)
+        sentid2nid = [i + w_nodes for i in range(N)]
+        #creat doc node
+        G.add_nodes(1)
+        docid = w_nodes + N
+        G.ndata["unit"][docid] = torch.ones(1) * 2
+        G.ndata["dtype"][docid] = torch.ones(1) * 2
+        G.set_e_initializer(dgl.init.zero_initializer)
+
+        for i in range(N):
+            c = Counter(input_pad[i])
+            sent_nid = sentid2nid[i]
+            sent_tfw = w2s_w[i]
+            for wid in c.keys():
+                if wid in wid2nid.keys() and self.vocab.id2word(wid) in sent_tfw.keys():
+                    tfidf = sent_tfw[self.vocab.id2word(wid)]
+                    tfidf_box = np.round(tfidf * 9)  # box = 10
+                    G.add_edges(wid2nid[wid], sent_nid,
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+                    G.add_edges(sent_nid, wid2nid[wid],
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+
+        G.nodes[sentid2nid].data["words"] = torch.LongTensor(input_pad)  # [N, seq_len]
+        G.nodes[sentid2nid].data["position"] = torch.arange(1, N + 1).view(-1, 1).long()  # [N, 1]
+
+        #add edge  sentence-news
+        for i in range(N):
+            sent_nid = sentid2nid[i]
+            G.add_edges(docid,sent_nid,
+                        data={"tffrac": torch.LongTensor([0]), "dtype": torch.Tensor([1])})
+            G.add_edges(sent_nid, docid,
+                        data={"tffrac": torch.LongTensor([0]), "dtype": torch.Tensor([1])})
+
+        G.nodes[docid].data["label"] = torch.FloatTensor([label])  # [1]
+        G.nodes[docid].data["time"] = torch.LongTensor([time_list])
+        return G
+
+    def get_graph(self, index):
+        news = self.news_list[index]
+        label = self.title_score_list[index]
+        time_list = self.time_list[index]
+        example = Examplegnn(news, self.vocab, self.sent_max_len, label, time_list)
+        return example
+
+
     def __len__(self):
         return len(self.title_list)
         #return len(self.news_list)
 
     def __getitem__(self, index):
+        """
+        should return a sample and a content graph of the news body
+        """
+        graph = self.get_graph(index)
+        input_pad = graph.enc_sent_input_pad
+        label = graph.label
+        time_list = graph.time_list
+        w2s_w = self.w2s_tfidf[index]  # 可以准确得到对应的tfidf
+        G = self.Create_contentGraph(input_pad, w2s_w, label, time_list)
         #news = self.news_list[index]
         title= self.title_list[index]
         entity=self.entity_list[index]
@@ -168,7 +369,7 @@ class Exampledataset(Dataset):
                   'for_comment_freq':for_freq+[1],
                   'back_comment_freq':back_freq+[1]}
 
-        return sample
+        return sample, G
     
 def starattentionmask(length):
     global_mask=\
@@ -184,7 +385,7 @@ def starattentionmask(length):
     return attention_mask
 
 def collate_func(batch_dic):
-
+    #[batchsize, 2]
     batch_len=len(batch_dic)
     src_ids_batch = []
     new_ids_batch = []
@@ -196,8 +397,11 @@ def collate_func(batch_dic):
     for_tgt_pad_mask_batch = []
     back_tgt_freq_batch = []
     for_tgt_freq_batch = []
+    graphs = []
     for i in range(batch_len):
-        dic=batch_dic[i]
+        dic=batch_dic[i][0]
+        g = batch_dic[i][1]
+        graphs.append(g)
         entity_batch.append(torch.tensor(dic['entity']))
         src_ids_batch.append(torch.tensor(dic['title_token']))
         new_ids_batch.append(torch.tensor(dic['new_token']))
@@ -260,74 +464,74 @@ def collate_func(batch_dic):
 
     back_tgt_pos_batch = [torch.LongTensor([i+1 for i in range(back_tgt_length)]) for _ in range(res['back_tgt_pad_mask'].shape[0])]
     res['back_tgt_pos'] = pad_sequence(back_tgt_pos_batch, batch_first=True)
-
-    return res
-
-
+    batched_graphs = dgl.batch([graphs[idx] for idx in batch_len])
+    return {'res' : res, 'graphs': batched_graphs}
 
 
-if __name__ == "__main__":
-    vocab_list=[]
-    for line in open("../data/5Wdata/entertainment_vocab_50000_B.txt", "r"):  # 设置文件对象并读取每一行文件
-        vocab_list.append(line[:-1])
-    print("[INFO] vocab_list读取成功！")
-    print("[INFO] vocab_size:" , len(vocab_list))
-    # 创建vocab类
-    vocab = Vocab(vocab_list, 110000)
-    # print(vocab.id2word(4466))
-    # print(vocab.id2word(62102))
-    print(vocab.word2id('迪丽热巴'))
-    #freq_path='../data/entity2/entertainment_entity_labelFre3.json'
-    freq_path='../data/5Wdata/entertainment_49500_2-gram_labelFre.json'
-    train_dataset = Exampledataset('../data/5Wdata/entertainment_train_49500_2gram.json',vocab,"train",freq_path)
 
-    batch_size=4
-    train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=4, shuffle=True,collate_fn=collate_func)
-    for batch_idx, batch in tqdm(enumerate(train_loader),total=int(len(train_loader.dataset) / batch_size) + 1):
-        src_batch, \
-        back_tgt_batch, \
-        for_tgt_batch, \
-        src_pad_batch, \
-        back_tgt_pad_batch, \
-        for_tgt_pad_batch, \
-        back_tgt_mask_batch, \
-        for_tgt_mask_batch, \
-        src_mask_batch, \
-        back_tgt_freq_batch, \
-        for_tgt_freq_batch , \
-        back_tgt_pos_batch, \
-        for_tgt_pos_batch= \
-            batch['src_ids'], \
-            batch['back_tgt_ids'], \
-            batch['for_tgt_ids'], \
-            batch['src_pad_mask'], \
-            batch['back_tgt_pad_mask'], \
-            batch['for_tgt_pad_mask'], \
-            batch['back_tgt_mask'], \
-            batch['for_tgt_mask'], \
-            batch['src_mask'], \
-            batch['back_tgt_freq'], \
-            batch['for_tgt_freq'], \
-            batch['back_tgt_pos'], \
-            batch['for_tgt_pos']
-        print(src_pad_batch)
-        for i in range(len(src_batch)):
-            title=[]
-            src_ids=src_batch[i].tolist()
-            for s in src_ids:
-                title.append(vocab.id2word(int(s)))
-            for_comment=[]
-            for s in for_tgt_batch[i].tolist():
-                for_comment.append(vocab.id2word(int(s)))
-            back_comment=[]
-            for s in back_tgt_batch[i].tolist():
-                back_comment.append(vocab.id2word(int(s)))
-
-            print("title:",''.join(title))
-            print("back_comment:",''.join(back_comment))
-            print("for_comment:",''.join(for_comment))
-
-        # print(src_pad_batch[0])
-        # print(tgt_pad_batch[0])
-        # print(tgt_mask_batch)
-        break
+#
+# if __name__ == "__main__":
+#     vocab_list=[]
+#     for line in open("../data/5Wdata/entertainment_vocab_50000_B.txt", "r"):  # 设置文件对象并读取每一行文件
+#         vocab_list.append(line[:-1])
+#     print("[INFO] vocab_list读取成功！")
+#     print("[INFO] vocab_size:" , len(vocab_list))
+#     # 创建vocab类
+#     vocab = Vocab(vocab_list, 110000)
+#     # print(vocab.id2word(4466))
+#     # print(vocab.id2word(62102))
+#     print(vocab.word2id('迪丽热巴'))
+#     #freq_path='../data/entity2/entertainment_entity_labelFre3.json'
+#     freq_path='../data/5Wdata/entertainment_49500_2-gram_labelFre.json'
+#     train_dataset = Exampledataset('../data/5Wdata/entertainment_train_49500_2gram.json',vocab,"train",freq_path)
+#
+#     batch_size=4
+#     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=4, shuffle=True,collate_fn=collate_func)
+#     for batch_idx, batch in tqdm(enumerate(train_loader),total=int(len(train_loader.dataset) / batch_size) + 1):
+#         src_batch, \
+#         back_tgt_batch, \
+#         for_tgt_batch, \
+#         src_pad_batch, \
+#         back_tgt_pad_batch, \
+#         for_tgt_pad_batch, \
+#         back_tgt_mask_batch, \
+#         for_tgt_mask_batch, \
+#         src_mask_batch, \
+#         back_tgt_freq_batch, \
+#         for_tgt_freq_batch , \
+#         back_tgt_pos_batch, \
+#         for_tgt_pos_batch= \
+#             batch['src_ids'], \
+#             batch['back_tgt_ids'], \
+#             batch['for_tgt_ids'], \
+#             batch['src_pad_mask'], \
+#             batch['back_tgt_pad_mask'], \
+#             batch['for_tgt_pad_mask'], \
+#             batch['back_tgt_mask'], \
+#             batch['for_tgt_mask'], \
+#             batch['src_mask'], \
+#             batch['back_tgt_freq'], \
+#             batch['for_tgt_freq'], \
+#             batch['back_tgt_pos'], \
+#             batch['for_tgt_pos']
+#         print(src_pad_batch)
+#         for i in range(len(src_batch)):
+#             title=[]
+#             src_ids=src_batch[i].tolist()
+#             for s in src_ids:
+#                 title.append(vocab.id2word(int(s)))
+#             for_comment=[]
+#             for s in for_tgt_batch[i].tolist():
+#                 for_comment.append(vocab.id2word(int(s)))
+#             back_comment=[]
+#             for s in back_tgt_batch[i].tolist():
+#                 back_comment.append(vocab.id2word(int(s)))
+#
+#             print("title:",''.join(title))
+#             print("back_comment:",''.join(back_comment))
+#             print("for_comment:",''.join(for_comment))
+#
+#         # print(src_pad_batch[0])
+#         # print(tgt_pad_batch[0])
+#         # print(tgt_mask_batch)
+#         break

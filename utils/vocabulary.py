@@ -10,7 +10,7 @@ STOP_DECODING = '[STOP]' # This has a vocab id, which is used at the end of untr
 
 
 class Vocab(object):
-    """Vocabulary class for mapping between words and ids (integers)"""
+    """Vocabulary class for mappincg between words and ids (integers)"""
 
     def __init__(self, vocab_list, max_size):
         """
@@ -58,7 +58,7 @@ class Vocab(object):
     def id2word(self, word_id):
         """Returns the word (string) corresponding to an id (integer)."""
         if word_id not in self._id_to_word:
-            raise ValueError('Id not found in vocab: %d' % word_id)
+            raise ValueError(w)
         return self._id_to_word[word_id]
 
     def size(self):

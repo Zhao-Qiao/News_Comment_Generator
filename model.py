@@ -10,7 +10,7 @@ import sys
 import numpy as np
 import torch.nn.functional as F
 from AF_LSTM import AF_LSTM
-
+from F4_Module.GNN_Module import GNN_Module
 
 class seq_generation_loss(nn.Module):
     ''' sequence generation loss
@@ -158,9 +158,10 @@ class LearnedPositionEncoding(nn.Embedding):
         x = x + weight[:x.size(0),:]
         return self.dropout(x)
 
+
 class S2sTransformer(nn.Module):
     def __init__(self,vocab,senti_model=None, word_emb_dim = 128,nhead = 4,pretrained_weight=None,num_encoder_layers=12,
-                 num_decoder_layers=6,dim_feedforward=2048,dropout=0.1):
+                 num_decoder_layers=6,dim_feedforward=2048,dropout=0.1,entity_news_dict=None,hps = None):
         super(S2sTransformer,self).__init__()
         # embedding 层
         self.vocab_size=vocab.size()
@@ -182,9 +183,12 @@ class S2sTransformer(nn.Module):
         encoder_layer = nn.TransformerEncoderLayer(self.model_dim,nhead,dim_feedforward,dropout)
         encoder_norm = nn.LayerNorm(self.model_dim)
         self.encoder = nn.TransformerEncoder(encoder_layer,num_encoder_layers,encoder_norm)
-        
+
         # 加载情感分析模型
         self.senti_model = senti_model
+        self.entity_news_dict = entity_news_dict
+        if self.senti_model == 'F4_Module':
+            self.senti_model = GNN_Module(hps=hps,embed=self.embedding,entity_news_dict=self.entity_news_dict)
         
         self.memory_linear = nn.Linear(2*word_emb_dim,word_emb_dim)
         self.memory_linear_dropout = nn.Dropout(p=0.1)  
@@ -197,6 +201,7 @@ class S2sTransformer(nn.Module):
         self.back_decoder = nn.TransformerDecoder(back_decoder_layer,num_decoder_layers,back_decoder_norm)
         self.for_decoder = nn.TransformerDecoder(for_decoder_layer,num_decoder_layers,for_decoder_norm)
 
+
         # 输出层
         self.output_layer = nn.Linear(self.model_dim,self.vocab_size)
         # self.for_output_layer = nn.Linear(self.model_dim,self.vocab_size)
@@ -206,7 +211,7 @@ class S2sTransformer(nn.Module):
         self.nhead = nhead
 
 
-    def forward(self, src_ids,back_tgt_ids,for_tgt_ids,src_pad_mask=None,back_tgt_pad_mask=None,for_tgt_pad_mask=None,back_tgt_mask=None,for_tgt_mask=None,src_mask=None,new_list=None,new_mask=None, entity=None,memory_mask=None,gpunum = 0):
+    def forward(self, src_ids,back_tgt_ids,for_tgt_ids,src_pad_mask=None,back_tgt_pad_mask=None,for_tgt_pad_mask=None,back_tgt_mask=None,for_tgt_mask=None,src_mask=None,new_list=None,new_mask=None, entity=None,memory_mask=None,gpunum = 0, G=None, entity_map=None):
 
         # embed层输入
         src = self.embedding(src_ids)
@@ -233,6 +238,7 @@ class S2sTransformer(nn.Module):
         
         # 情感编码结果
         _, senti_memory = self.senti_model(new_list, new_mask, entity, gpunum)
+        senti_memory = self.senti_model(G,entity_map)
         #print(senti_memory.shape)
         
         # 扩展维度

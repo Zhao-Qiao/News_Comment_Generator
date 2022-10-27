@@ -16,26 +16,91 @@ from AF_LSTM import AF_LSTM
 from utils.vocabulary import Vocab
 import numpy as np
 import json
+import dgl
+from F4_Module.GNN_Module import GNN_Module
+
 # import torch.multiprocessing
 # torch.multiprocessing.set_sharing_strategy('file_system')
+# TODO: reorganize the code structure of F4 Module, update interface, replace "hps"
+def get_entity_list(entity_file_path):
+    data = []
+    with open(entity_file_path, 'r') as f:
+        data = f.readlines()
+        data = [i.rstrip() for i in data]
+        f.close()
+    return data
+def creat_entitydict(entity_list,vocab):
+    # TODO : result error: entities are usually consists of more than 2 words, therefore they are often not included in the vocab
+    entity_dict = {}
+    entity_new_dict = {}
+    index=0
+    for entity in entity_list:
+        entity_dict[entity]=index
+        entity_new_dict[index] = vocab.word2id(entity)
+        index+=1
+    return entity_dict,entity_new_dict
+
+def creat_entitymap(G,vocab,entity_dict,entseqlen):
+    Nnode_id = G.filter_nodes(lambda nodes: nodes.data["dtype"] == 2).tolist()
+    entity_map = []
+    newsid2nid={}
+    for i in list(entity_dict.keys()):
+        entity_map.append([])
+    for idx in Nnode_id:
+        word_list=G.nodes[idx].data["word"].squeeze().tolist()
+        word_list = list(set(word_list))
+        for word in word_list:
+            if vocab.id2word(word) in list(entity_dict.keys()):
+                news_id=int(G.nodes[idx].data["id"].item())
+                newsid2nid[news_id]=idx
+                entity_map[entity_dict[vocab.id2word(word)]].append(news_id)
+    entity_map_pad=[]
+    for i in range(len(entity_map)):
+        seq_words = entity_map[i].copy()
+        seqtimelist=[G.nodes[newsid2nid[ide]].data["time"].item() for ide in seq_words]
+        data = list(zip(seq_words, seqtimelist))
+
+        data.sort(key=lambda x : x[1])
+        seq_words=[]
+        for seq,times in data:
+            seq_words.append(seq)
+        if entity_map[i]!=[]:
+            if len(seq_words) > entseqlen:
+
+                seq_words = seq_words[:entseqlen]
+            if len(seq_words) < entseqlen:
+                seq_words.extend([0] * (entseqlen - len(seq_words)))
+        else:
+            seq_words.extend([0] * entseqlen)
+        entity_map_pad.append(seq_words)
+    return entity_map_pad
+
+    '''
+    (batch_len, )
+    '''
+    graphs, index= map(list, zip(*samples))
+    graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]  # sent node of graph
+    sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
+    batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
+    return batched_graph, [index[idx] for idx in sorted_index]
 
 
-
-def Train(args):
+def Train(args,hps):
     train_path = args['trainset_path']
     dev_path   = args['validset_path']
     vocab_path = args['vocab_path']
     senti_vocab_path = args['senti_vocab_path']
     vocab_len = args['vocab_len']
     senti_vocab_len = args['senti_vocab_len']
+    entity_list_path=args['entity_list_path']
     resume = args['resume']
     checkpoint_path = args['checkpoint_path']
-    history_path    = args['history_path']
+    history_path = args['history_path']
     log_path = args['log_path']
     model_name = args['model_save_name']
     model_resume_name = args['model_resume_name']
     batch_size = args['batch_size']
-    end_epoch  = args['end_epoch']
+    end_epoch = args['end_epoch']
     lr = args['lr']
     loss_check_freq = args['loss_check']
     check_steps= args['check_steps']
@@ -54,6 +119,7 @@ def Train(args):
     freq_path=args['freq_path']
     sparse_attention=args['sparse_attention']
     devices = args['devices']
+    ent_seq_len = args['ent_seq_len']
     # os.environ["CUDA_VISIBLE_DEVICES"] = GPU_ids
 
     #########
@@ -89,7 +155,9 @@ def Train(args):
     print("[INFO] vocab_size:" , len(vocab_list))
     # 创建vocab类
     vocab = Vocab(vocab_list, vocab_len)
-    
+    # 创建entity_list
+    entity_list = get_entity_list(entity_list_path)
+    entity_dict, entity_news_dict = creat_entitydict(entity_list, vocab)
     #加载情感模型词典
     vocab_list2=[]
     for line in open(senti_vocab_path, "r"):
@@ -98,8 +166,7 @@ def Train(args):
     print("[INFO] senti_vocab_size:" , len(vocab_list2))
     # 创建sentivocab类
     senti_vocab = Vocab(vocab_list2, senti_vocab_len)
-    
-    
+
     trainset = Exampledataset(train_path, vocab,senti_vocab, "train",freq_path)
 
     print("训练集样本数：%d"%(trainset.__len__()))
@@ -125,7 +192,7 @@ def Train(args):
         print("save完成")
     pretrained_weight = np.load(pretrain_path)
     pretrained_weight = torch.from_numpy(pretrained_weight).to(device)
-    
+
     # 加载 情感预训练embed
     if not os.path.exists(senti_pretrain_path):
         print("无pretrain,加载中")
@@ -135,17 +202,19 @@ def Train(args):
         np.save(senti_pretrain_path,senti_pretrained_weight)
         print("save完成")
     senti_pretrained_weight = np.load(senti_pretrain_path)
-    senti_pretrained_weight = torch.from_numpy(senti_pretrained_weight).to(device)
-    
+    # senti_pretrained_weight = torch.from_numpy(senti_pretrained_weight).to(device)
+    senti_pretrained_weight = torch.from_numpy(senti_pretrained_weight)
     print("pretrain_weight load 成功！")
 
     # 模型上GPU，加载情感模型
-    AFLSTM_model = AF_LSTM(senti_vocab, ifNorm=True, num_layers=1, pretrained_embeddings=senti_pretrained_weight)
-    AFLSTM_model.load_state_dict(torch.load(args['senti_model_path']))
-    print("loading Sentiment analysis model "+args['senti_model_path']+"...")
-    print("Successfully load the Sentiment analysis model completed by pre training!")
-    AFLSTM_model.to(device)
-    model = S2sTransformer(vocab, senti_model = AFLSTM_model, word_emb_dim = word_emb_dim, nhead = nheads, pretrained_weight = pretrained_weight)
+    # GNN_model = GNN_Module(embed=embed_loader,entity_news_dict=entity_news_dict)
+    # AFLSTM_model = AF_LSTM(senti_vocab, ifNorm=True, num_layers=1, pretrained_embeddings=senti_pretrained_weight)
+    # AFLSTM_model.load_state_dict(torch.load(args['senti_model_path']))
+    # print("loading Sentiment analysis model "+args['senti_model_path']+"...")
+    # print("Successfully load the Sentiment analysis model completed by pre training!")
+    # AFLSTM_model.to(device)
+    pretrained_weight = None
+    model = S2sTransformer(vocab=vocab, senti_model = 'F4_Module', word_emb_dim = word_emb_dim, nhead = nheads, pretrained_weight = pretrained_weight, entity_news_dict=entity_news_dict, hps=hps)
     model.to(device)
     device_ids = range(torch.cuda.device_count())
 
@@ -164,6 +233,7 @@ def Train(args):
 
     # 加载loss、optim、scheduler
     criterion = seq_generation_loss(device=device,numda=numda,gama=gama).to(device)
+    # criterion = seq_generation_loss(device=device, numda=numda, gama=gama)
     optim = torch.optim.Adam(filter(lambda p: p.requires_grad, model.parameters()), lr=lr)
     scheduler = StepLR(optim, step_size=8, gamma=0.95)
     #每5个check对learning rate进行乘以0.95的衰减
@@ -178,8 +248,10 @@ def Train(args):
         local_steps_cnt=0
         #########   train ###########
         print ('start training!')
-        for batch_idx, batch in tqdm(enumerate(train_loader),
+        for batch_idx, batch_dict in tqdm(enumerate(train_loader),
                                      total=int(len(train_loader.dataset) / batch_size) + 1):
+            batch = batch_dict['res']
+            G= batch_dict['graphs']
             src_batch, \
             back_tgt_batch, \
             for_tgt_batch, \
@@ -213,6 +285,7 @@ def Train(args):
                 batch['new_ids_mask'], \
                 batch['entity']
 
+            G = G.to(device)
             src_batch = src_batch.to(device)
             back_tgt_batch = back_tgt_batch.to(device)
             for_tgt_batch = for_tgt_batch.to(device)
@@ -229,7 +302,9 @@ def Train(args):
             new_ids_batch = new_ids_batch.to(device)
             new_ids_mask_batch = new_ids_mask_batch.to(device)
             entity_batch = entity_batch.to(device)
-            
+
+
+            entity_map = creat_entitymap(G, vocab, entity_dict, ent_seq_len)
 
             #print("tgt_batch：",tgt_batch)
             model.zero_grad()
@@ -249,7 +324,9 @@ def Train(args):
                                        new_mask = new_ids_mask_batch,
                                        entity = entity_batch,
                                        memory_mask=None,
-                                       gpunum = int(devices))
+                                       gpunum = int(devices),
+                                       G=G,
+                                       entity_map = entity_map)
             else:
                 for_out,back_out=model(src_ids = src_batch,
                                        back_tgt_ids = back_tgt_batch,
@@ -264,7 +341,9 @@ def Train(args):
                                        new_mask = new_ids_mask_batch,
                                        entity = entity_batch,
                                        memory_mask=None,
-                                       gpunum = int(devices))
+                                       gpunum = int(devices),
+                                       G=G,
+                                       entity_map = entity_map)
             loss = criterion(for_out,back_out,
                              back_tgt_batch,
                              for_tgt_batch,
@@ -320,6 +399,8 @@ if __name__ == "__main__":
         # 词典最大长度
         'vocab_len':110000,
         'senti_vocab_len':150000,
+        #path to entity_list(v_names actually...)
+        'entity_list_path': "./data/generate_data/"+datasetname+"_data/"+datasetname+"_vnames_list.txt",
         # 模型保存路径
         'checkpoint_path':'./ckpt/',
         'history_path':'./history/',
@@ -362,7 +443,44 @@ if __name__ == "__main__":
         'numda':0.4,
         'gama':0,
         'sparse_attention':False,
-        'devices':'2'
+        'devices':'2',
+        'ent_seq_len': 5, #maximum length of entity enquence
+    }
+    hps = {
+        'lr': 1e-4,
+        'n_iter': 5,
+        'word_embed_dim':128,
+        'feature_embed_size':128,
+        'feat_embed_size': 128,
+        'n_feature_size': 128,
+        'hidden_size': 128,
+        'atten_dropout_prob':0.1,
+        'n_head':4,
+        'ffn_inner_hidden_size':1024,
+        'ffn_dropout_prob':0.1,
+        'sent_max_len':100,
+        'embed_size':128, #used in sentence encoder, should be equal to word_embed_dim? idk
+        'doc_max_timesteps':10,
+        'lstm_hidden_state':128,
+        'lstm_layers':2,
+        'bidirectional':True,
+        # 训练batch参数
+        'batch_size': 16,
+        'end_epoch': 200,
+        'check_steps': 1000,
+        # 模型保存间隔步数
+        'save_steps': 50000,
+        'lr': 1e-4,
+        # 输出loss间隔步数
+        'loss_check': 300,
+        # only test
+        'version_info': 'use pretrained embed , encode_layers=6 model.train() revise',
+        'GPU_ids': '7',
+        # 学习率递减
+        'lr_descent': False,
+        # 最小学习率
+        'minlr': 5e-5,
+
     }
     
-    Train(args)
+    Train(args,hps)
