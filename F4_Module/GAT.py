@@ -51,4 +51,5 @@ class WSWGAT(nn.Module):
 
         h = F.elu(self.layer(g, neighbor))
         h = h + origin
-        h = self.ffn(h)
+        h = self.ffn(h.unsqueeze(0)).squeeze(0)
+        return h

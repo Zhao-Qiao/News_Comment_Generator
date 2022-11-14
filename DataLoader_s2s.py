@@ -1,5 +1,6 @@
 import torch
 from torch.utils.data import Dataset
+import pickle
 from tqdm import tqdm
 import json
 import os
@@ -11,6 +12,14 @@ import dgl
 import numpy as np
 from collections import Counter
 import math
+def changetime_list(time_lists):
+    timedict={}
+    time2id=time_lists
+    time2id.sort()
+    for i in range(len(time2id)):
+        timedict[time2id[i]]=i+1
+    time_fin=[timedict[idx] for idx in time_lists]
+    return time_fin
 def tfcaculate(word, news):
     result = Counter(news)
     num = result[word]
@@ -58,10 +67,12 @@ def jsonfreqread(freq_path,vocab):
     return word2freq
 
 def jsonloader(filename,flag):
+    # newslist 每一项是将所有的句子合并成一个长单词序列，为了传入F4需要将每个句子分开。
     # 将数据加载到一个列表中
     file = open(filename, 'r', encoding='utf-8')
     entity_list=[]#实体
     news_list = []#包含实体的新闻新闻
+    news_sent_list=[]# 未拼接的news，格式为：[[sent1,sent2,[w1,w2,...m]],[news2],...,[newsn]]
     date_list = []#日期
     vnames_list = []#新闻所含实体列表
     label_list=[]#评论
@@ -71,17 +82,21 @@ def jsonloader(filename,flag):
     label_score_list=[]#评论情感分数
     for line in file.readlines():
         pop_dict = json.loads(line)
+        # skipping news without news story
         if 'entity' not in pop_dict and flag=='train':
             continue
         entity = pop_dict['entity']
         date = pop_dict['date']
         news = pop_dict['news']
-        
+        news_sent = []
         newlist = []
         for new in news:
             if entity in new:
                 newlist.extend(new)
-                
+                news_sent.append(new)
+        if(newlist == []):
+            continue
+        news_sent_list.append(news_sent)
         vnames = pop_dict['v_names']
         if flag=='train':
             label=pop_dict['label']
@@ -99,7 +114,7 @@ def jsonloader(filename,flag):
         title_list.append(title)
         label_score_list.append(label_score)
         title_score_list.append(title_score)
-    return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list,title_score_list
+    return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list,title_score_list,news_sent_list
 
 
 class Examplegnn(object):  # 一个新闻--->若干句子&词--->构图，node-word&sentence，边word2sent，sent2word
@@ -150,32 +165,38 @@ class Examplegnn(object):  # 一个新闻--->若干句子&词--->构图，node-w
 
 
 class Exampledataset(Dataset):
-    def __init__(self, data_file,vocab,senti_vocab,flag,freq_path=None):
+    def __init__(self, data_file,vocab,senti_vocab,flag,freq_path=None,hps=None):
         """
         :param data_root:   数据集路径
         """
         self.vocab = vocab
         self.senti_vocab = senti_vocab
         self.data_root = data_file
+        self.sent_max_len=hps['sent_max_len']
         #----------read process-----------
         self.entity_list,self.news_list, self.time_list, \
         self.vnames_list ,\
         self.label_list,\
         self.label_score_list,\
         self.title_list,\
-        self.title_score_list = jsonloader(data_file,flag)
+        self.title_score_list,self.news_sent_list = jsonloader(data_file,flag)
         if freq_path!=None:
             self.word2freq=jsonfreqread(freq_path,vocab)
 
         if flag=="valid":
             self.label_list=self.changenews2list(self.label_list)
 
-        self.tfidf_list = creattfidf(news_lists=self.news_list)
+        # self.tfidf_list = creattfidf(news_lists=self.news_list)
+        # TODO: tfidf data is pre-computed and imported directly to dataset. should be more flexible
+        with open("./pkldata/sport_tfidf.pkl",'rb') as f:
+            self.w2s_tfidf = pickle.load(f)
+        # self.w2s_tfidf = creattfidf(news_lists=self.news_list)
 
         #----------data preprocess--------
         # self.news_list = self.changenews2list(news_list)
         self.title_list = self.delword(self.title_list)
         self.for_label_list,self.back_label_list = self.entitylabelcreat(self.label_list,self.entity_list)
+        self.time_list=changetime_list(self.time_list)
     
     def delword(self,label_list):
         cur_news_list=[]
@@ -273,12 +294,20 @@ class Exampledataset(Dataset):
                     entity_dict.append(wid)
         return entity_dict
 
-    def Create_contentGraph(self, input_pad, w2s_w , label,time_list):
+    def Create_contentGraph(self, input_pad, w2s_w , label,time_list, index):
         G = dgl.DGLGraph()  # content graph
         wid2nid, nid2wid = self.AddWordNode(G, input_pad)
         w_nodes = len(nid2wid)
         # print(wid2nid,nid2wid)
         N = len(input_pad)
+        word_list=[]
+        for i in range(N):
+            for j in range(len(input_pad[i])):
+                if input_pad[i][j] not in word_list:
+                    word_list.append(input_pad[i][j])
+        if len(word_list)<50:
+            for i in range(50-len(word_list)):
+                word_list.append(0)
         G.add_nodes(N)
         G.ndata["unit"][w_nodes:] = torch.ones(N)
         G.ndata["dtype"][w_nodes:] = torch.ones(N)
@@ -293,6 +322,7 @@ class Exampledataset(Dataset):
         for i in range(N):
             c = Counter(input_pad[i])
             sent_nid = sentid2nid[i]
+            # print("i:",i ,"; w2s;", len(w2s_w) )
             sent_tfw = w2s_w[i]
             for wid in c.keys():
                 if wid in wid2nid.keys() and self.vocab.id2word(wid) in sent_tfw.keys():
@@ -314,12 +344,16 @@ class Exampledataset(Dataset):
             G.add_edges(sent_nid, docid,
                         data={"tffrac": torch.LongTensor([0]), "dtype": torch.Tensor([1])})
 
+        G.nodes[docid].data["id"] = torch.LongTensor([index + 1])
         G.nodes[docid].data["label"] = torch.FloatTensor([label])  # [1]
         G.nodes[docid].data["time"] = torch.LongTensor([time_list])
+        G.nodes[docid].data["word"] = torch.LongTensor([word_list])
+        if(docid==0):
+            print("err")
         return G
 
     def get_graph(self, index):
-        news = self.news_list[index]
+        news = self.news_sent_list[index]
         label = self.title_score_list[index]
         time_list = self.time_list[index]
         example = Examplegnn(news, self.vocab, self.sent_max_len, label, time_list)
@@ -339,7 +373,7 @@ class Exampledataset(Dataset):
         label = graph.label
         time_list = graph.time_list
         w2s_w = self.w2s_tfidf[index]  # 可以准确得到对应的tfidf
-        G = self.Create_contentGraph(input_pad, w2s_w, label, time_list)
+        G = self.Create_contentGraph(input_pad, w2s_w, label, time_list, index)
         #news = self.news_list[index]
         title= self.title_list[index]
         entity=self.entity_list[index]
@@ -385,7 +419,14 @@ def starattentionmask(length):
     return attention_mask
 
 def collate_func(batch_dic):
+    # 先sort graph， 再根据sorted index处理embedding， 再组合
     #[batchsize, 2]
+    batched_data = []
+    # samples = batch_dic[1]
+    # graphs, index = map(list, zip(*samples))
+    # graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]  # sent node of graph
+    # sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
+    # batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
     batch_len=len(batch_dic)
     src_ids_batch = []
     new_ids_batch = []
@@ -397,21 +438,24 @@ def collate_func(batch_dic):
     for_tgt_pad_mask_batch = []
     back_tgt_freq_batch = []
     for_tgt_freq_batch = []
-    graphs = []
-    for i in range(batch_len):
-        dic=batch_dic[i][0]
-        g = batch_dic[i][1]
-        graphs.append(g)
+    graphs = [batch_dic[idx][1] for idx in range(batch_len)]
+    ''''''
+    graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]  # sent node of graph
+    sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
+    batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
+    for idx in sorted_index:
+        dic = batch_dic[idx][0]
         entity_batch.append(torch.tensor(dic['entity']))
         src_ids_batch.append(torch.tensor(dic['title_token']))
         new_ids_batch.append(torch.tensor(dic['new_token']))
         back_tgt_ids_batch.append(torch.tensor(dic['back_comment_token']))
         for_tgt_ids_batch.append(torch.tensor(dic['for_comment_token']))
-        src_pad_mask_batch.append(torch.tensor([True]*len(dic['title_token'])))
-        back_tgt_pad_mask_batch.append(torch.tensor([True]*len(dic['back_comment_token'])))
-        for_tgt_pad_mask_batch.append(torch.tensor([True]*len(dic['for_comment_token'])))
+        src_pad_mask_batch.append(torch.tensor([True] * len(dic['title_token'])))
+        back_tgt_pad_mask_batch.append(torch.tensor([True] * len(dic['back_comment_token'])))
+        for_tgt_pad_mask_batch.append(torch.tensor([True] * len(dic['for_comment_token'])))
         back_tgt_freq_batch.append(torch.tensor(dic['back_comment_freq']))
         for_tgt_freq_batch.append(torch.tensor(dic['for_comment_freq']))
+    ''''''
     res={}
     
     # 内容标题id batch
@@ -464,74 +508,7 @@ def collate_func(batch_dic):
 
     back_tgt_pos_batch = [torch.LongTensor([i+1 for i in range(back_tgt_length)]) for _ in range(res['back_tgt_pad_mask'].shape[0])]
     res['back_tgt_pos'] = pad_sequence(back_tgt_pos_batch, batch_first=True)
-    batched_graphs = dgl.batch([graphs[idx] for idx in batch_len])
-    return {'res' : res, 'graphs': batched_graphs}
+
+    return [res, batched_graph]
 
 
-
-#
-# if __name__ == "__main__":
-#     vocab_list=[]
-#     for line in open("../data/5Wdata/entertainment_vocab_50000_B.txt", "r"):  # 设置文件对象并读取每一行文件
-#         vocab_list.append(line[:-1])
-#     print("[INFO] vocab_list读取成功！")
-#     print("[INFO] vocab_size:" , len(vocab_list))
-#     # 创建vocab类
-#     vocab = Vocab(vocab_list, 110000)
-#     # print(vocab.id2word(4466))
-#     # print(vocab.id2word(62102))
-#     print(vocab.word2id('迪丽热巴'))
-#     #freq_path='../data/entity2/entertainment_entity_labelFre3.json'
-#     freq_path='../data/5Wdata/entertainment_49500_2-gram_labelFre.json'
-#     train_dataset = Exampledataset('../data/5Wdata/entertainment_train_49500_2gram.json',vocab,"train",freq_path)
-#
-#     batch_size=4
-#     train_loader = DataLoader(train_dataset, batch_size=batch_size, num_workers=4, shuffle=True,collate_fn=collate_func)
-#     for batch_idx, batch in tqdm(enumerate(train_loader),total=int(len(train_loader.dataset) / batch_size) + 1):
-#         src_batch, \
-#         back_tgt_batch, \
-#         for_tgt_batch, \
-#         src_pad_batch, \
-#         back_tgt_pad_batch, \
-#         for_tgt_pad_batch, \
-#         back_tgt_mask_batch, \
-#         for_tgt_mask_batch, \
-#         src_mask_batch, \
-#         back_tgt_freq_batch, \
-#         for_tgt_freq_batch , \
-#         back_tgt_pos_batch, \
-#         for_tgt_pos_batch= \
-#             batch['src_ids'], \
-#             batch['back_tgt_ids'], \
-#             batch['for_tgt_ids'], \
-#             batch['src_pad_mask'], \
-#             batch['back_tgt_pad_mask'], \
-#             batch['for_tgt_pad_mask'], \
-#             batch['back_tgt_mask'], \
-#             batch['for_tgt_mask'], \
-#             batch['src_mask'], \
-#             batch['back_tgt_freq'], \
-#             batch['for_tgt_freq'], \
-#             batch['back_tgt_pos'], \
-#             batch['for_tgt_pos']
-#         print(src_pad_batch)
-#         for i in range(len(src_batch)):
-#             title=[]
-#             src_ids=src_batch[i].tolist()
-#             for s in src_ids:
-#                 title.append(vocab.id2word(int(s)))
-#             for_comment=[]
-#             for s in for_tgt_batch[i].tolist():
-#                 for_comment.append(vocab.id2word(int(s)))
-#             back_comment=[]
-#             for s in back_tgt_batch[i].tolist():
-#                 back_comment.append(vocab.id2word(int(s)))
-#
-#             print("title:",''.join(title))
-#             print("back_comment:",''.join(back_comment))
-#             print("for_comment:",''.join(for_comment))
-#
-#         # print(src_pad_batch[0])
-#         # print(tgt_pad_batch[0])
-#         # print(tgt_mask_batch)
-#         break

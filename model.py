@@ -237,8 +237,8 @@ class S2sTransformer(nn.Module):
         #print(content_memory.shape)
         
         # 情感编码结果
-        _, senti_memory = self.senti_model(new_list, new_mask, entity, gpunum)
-        senti_memory = self.senti_model(G,entity_map)
+        # _, senti_memory = self.senti_model(new_list, new_mask, entity, gpunum)
+        _,senti_memory = self.senti_model(G,entity_map)
         #print(senti_memory.shape)
         
         # 扩展维度

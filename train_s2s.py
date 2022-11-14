@@ -41,6 +41,8 @@ def creat_entitydict(entity_list,vocab):
     return entity_dict,entity_new_dict
 
 def creat_entitymap(G,vocab,entity_dict,entseqlen):
+    # TODO: fix bug: all entitiy maps are [0,0,0,0,0]
+    # TODO: go check if Graph G is properly constructed? node attributes, features, and etc
     Nnode_id = G.filter_nodes(lambda nodes: nodes.data["dtype"] == 2).tolist()
     entity_map = []
     newsid2nid={}
@@ -120,7 +122,7 @@ def Train(args,hps):
     sparse_attention=args['sparse_attention']
     devices = args['devices']
     ent_seq_len = args['ent_seq_len']
-    # os.environ["CUDA_VISIBLE_DEVICES"] = GPU_ids
+    os.environ["CUDA_VISIBLE_DEVICES"] = GPU_ids
 
     #########
     if not os.path.exists(log_path):
@@ -167,7 +169,7 @@ def Train(args,hps):
     # 创建sentivocab类
     senti_vocab = Vocab(vocab_list2, senti_vocab_len)
 
-    trainset = Exampledataset(train_path, vocab,senti_vocab, "train",freq_path)
+    trainset = Exampledataset(train_path, vocab,senti_vocab, "train",freq_path,hps=hps)
 
     print("训练集样本数：%d"%(trainset.__len__()))
     logger.info("训练集样本数：%d"%(trainset.__len__()))
@@ -248,10 +250,10 @@ def Train(args,hps):
         local_steps_cnt=0
         #########   train ###########
         print ('start training!')
-        for batch_idx, batch_dict in tqdm(enumerate(train_loader),
+        for batch_idx, batch_pair in tqdm(enumerate(train_loader),
                                      total=int(len(train_loader.dataset) / batch_size) + 1):
-            batch = batch_dict['res']
-            G= batch_dict['graphs']
+            batch = batch_pair[0]
+            G= batch_pair[1]
             src_batch, \
             back_tgt_batch, \
             for_tgt_batch, \
@@ -305,7 +307,7 @@ def Train(args,hps):
 
 
             entity_map = creat_entitymap(G, vocab, entity_dict, ent_seq_len)
-
+            entity_map = torch.LongTensor(entity_map).to(device)
             #print("tgt_batch：",tgt_batch)
             model.zero_grad()
 
@@ -418,7 +420,7 @@ if __name__ == "__main__":
         # only test
         'model_resume_name':'',
         # 训练batch参数
-        'batch_size':16,
+        'batch_size':1,
         'end_epoch':200,
         'check_steps':1000,
         # 模型保存间隔步数
@@ -428,7 +430,7 @@ if __name__ == "__main__":
         'loss_check':300,
         # only test
         'version_info':'use pretrained embed , encode_layers=6 model.train() revise',
-        'GPU_ids':'7',
+        'GPU_ids':'0',
         # 学习率递减
         'lr_descent':False,
         # 最小学习率
@@ -443,7 +445,7 @@ if __name__ == "__main__":
         'numda':0.4,
         'gama':0,
         'sparse_attention':False,
-        'devices':'2',
+        'devices':'0',
         'ent_seq_len': 5, #maximum length of entity enquence
     }
     hps = {
@@ -475,7 +477,7 @@ if __name__ == "__main__":
         'loss_check': 300,
         # only test
         'version_info': 'use pretrained embed , encode_layers=6 model.train() revise',
-        'GPU_ids': '7',
+        'GPU_ids': '0',
         # 学习率递减
         'lr_descent': False,
         # 最小学习率

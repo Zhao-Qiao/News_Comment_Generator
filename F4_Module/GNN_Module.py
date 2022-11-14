@@ -124,7 +124,7 @@ class GNN_Module(nn.Module):
 
         # word node init
         word_feature = self.set_wnfeature(graph)  # [wnode, embed_size]
-        sent_feature = self.n_feature_proj(self.set_snfeature(graph))  # [snode, n_feature_size]
+        sent_feature = self.n_feature_proj(self.set_snfeature(graph))  # [snode, n_feature_size]#thereis a bug
 
         # the start state------>content graph
         word_state = word_feature
@@ -136,6 +136,8 @@ class GNN_Module(nn.Module):
             # word -> sent
             sent_state = self.word2sent(graph, word_state, sent_state)
         Nnode_id = graph.filter_nodes(lambda nodes: nodes.data["dtype"] == 2)
+        print(torch.cuda.device_count())
+        print(torch.cuda.is_available())
         news_state=torch.zeros(len(Nnode_id),self.feat_embed_size).to(torch.device("cuda"))
 
         news_embedding=self.sent2news(graph,sent_state,news_state)
@@ -164,7 +166,7 @@ class GNN_Module(nn.Module):
         #                                          self._entity_news_dict, entity_map, newsid2nid)
 
         result = self.pred(news_embedding)
-        return result
+        return result, news_embedding
     def _init_sn_param(self):
         self.sent_pos_embed = nn.Embedding.from_pretrained(
             get_sinusoid_encoding_table(self._hps['doc_max_timesteps'] + 1, self.embed_size, padding_idx=0),
