@@ -21,7 +21,7 @@ from F4_Module.GNN_Module import GNN_Module
 
 # import torch.multiprocessing
 # torch.multiprocessing.set_sharing_strategy('file_system')
-# TODO: reorganize the code structure of F4 Module, update interface, replace "hps"
+# conda TODO: reorganize the code structure of F4 Module, update interface, replace "hps"
 def get_entity_list(entity_file_path):
     data = []
     with open(entity_file_path, 'r') as f:
@@ -169,7 +169,7 @@ def Train(args,hps):
     # 创建sentivocab类
     senti_vocab = Vocab(vocab_list2, senti_vocab_len)
 
-    trainset = Exampledataset(train_path, vocab,senti_vocab, "train",freq_path,hps=hps)
+    trainset = Exampledataset(train_path, vocab,senti_vocab, "train",freq_path,hps=hps,pkl_path=hps['pkl_path'])
 
     print("训练集样本数：%d"%(trainset.__len__()))
     logger.info("训练集样本数：%d"%(trainset.__len__()))
@@ -207,16 +207,21 @@ def Train(args,hps):
     # senti_pretrained_weight = torch.from_numpy(senti_pretrained_weight).to(device)
     senti_pretrained_weight = torch.from_numpy(senti_pretrained_weight)
     print("pretrain_weight load 成功！")
-
+    ## some useful shits
+    embed_for_gnn = torch.nn.Embedding(vocab.size(), word_emb_dim).to(device)
+    ## end of shits
     # 模型上GPU，加载情感模型
-    # GNN_model = GNN_Module(embed=embed_loader,entity_news_dict=entity_news_dict)
-    # AFLSTM_model = AF_LSTM(senti_vocab, ifNorm=True, num_layers=1, pretrained_embeddings=senti_pretrained_weight)
-    # AFLSTM_model.load_state_dict(torch.load(args['senti_model_path']))
-    # print("loading Sentiment analysis model "+args['senti_model_path']+"...")
-    # print("Successfully load the Sentiment analysis model completed by pre training!")
-    # AFLSTM_model.to(device)
+    # GNN_model = GNN_Module(hps=hps, embed=embed_for_gnn, entity_news_dict=entity_news_dict)
+    # GNN_model.to(device)
+    AFLSTM_model = AF_LSTM(senti_vocab, ifNorm=True, num_layers=1, pretrained_embeddings=senti_pretrained_weight)
+    AFLSTM_model.load_state_dict(torch.load(args['senti_model_path']))
+    print("loading Sentiment analysis model "+args['senti_model_path']+"...")
+    print("Successfully load the Sentiment analysis model completed by pre training!")
+    AFLSTM_model.to(device)
     pretrained_weight = None
-    model = S2sTransformer(vocab=vocab, senti_model = 'F4_Module', word_emb_dim = word_emb_dim, nhead = nheads, pretrained_weight = pretrained_weight, entity_news_dict=entity_news_dict, hps=hps)
+    # model = S2sTransformer(vocab=vocab, senti_model = 'F4_Module', word_emb_dim = word_emb_dim, nhead = nheads, pretrained_weight = pretrained_weight, entity_news_dict=entity_news_dict, hps=hps,device=device)
+    model = S2sTransformer(vocab=vocab, senti_model=AFLSTM_model, word_emb_dim=word_emb_dim, nhead=nheads,
+                           pretrained_weight=pretrained_weight, entity_news_dict=entity_news_dict, hps=hps)
     model.to(device)
     device_ids = range(torch.cuda.device_count())
 
@@ -420,7 +425,7 @@ if __name__ == "__main__":
         # only test
         'model_resume_name':'',
         # 训练batch参数
-        'batch_size':1,
+        'batch_size':16,
         'end_epoch':200,
         'check_steps':1000,
         # 模型保存间隔步数
@@ -430,7 +435,7 @@ if __name__ == "__main__":
         'loss_check':300,
         # only test
         'version_info':'use pretrained embed , encode_layers=6 model.train() revise',
-        'GPU_ids':'0',
+        'GPU_ids':'1',
         # 学习率递减
         'lr_descent':False,
         # 最小学习率
@@ -441,11 +446,13 @@ if __name__ == "__main__":
         'senti_pretrain_path':"data/sentiment_data/"+ datasetname + "_data/pretrained_weight_"+ datasetname + "_sentiment_vocab.npy",
         # 词频字典路径
         'freq_path': "data/generate_data/"+ datasetname + "_data/"+ datasetname + "_49500_2-gram_labelFre.json",
+        #pkl_path:
+        'pkl_path': "./pkldata/sport_tfidf.pkl",
         # 超参
         'numda':0.4,
         'gama':0,
         'sparse_attention':False,
-        'devices':'0',
+        'devices':'1',
         'ent_seq_len': 5, #maximum length of entity enquence
     }
     hps = {
@@ -467,7 +474,7 @@ if __name__ == "__main__":
         'lstm_layers':2,
         'bidirectional':True,
         # 训练batch参数
-        'batch_size': 16,
+        'batch_size': 1,
         'end_epoch': 200,
         'check_steps': 1000,
         # 模型保存间隔步数
@@ -477,7 +484,7 @@ if __name__ == "__main__":
         'loss_check': 300,
         # only test
         'version_info': 'use pretrained embed , encode_layers=6 model.train() revise',
-        'GPU_ids': '0',
+        'GPU_ids': '1',
         # 学习率递减
         'lr_descent': False,
         # 最小学习率

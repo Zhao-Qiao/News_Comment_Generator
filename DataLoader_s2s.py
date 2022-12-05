@@ -11,6 +11,7 @@ from torch.nn.utils.rnn import pad_sequence
 import dgl
 import numpy as np
 from collections import Counter
+# from tools import jsonloader
 import math
 def changetime_list(time_lists):
     timedict={}
@@ -165,7 +166,7 @@ class Examplegnn(object):  # 一个新闻--->若干句子&词--->构图，node-w
 
 
 class Exampledataset(Dataset):
-    def __init__(self, data_file,vocab,senti_vocab,flag,freq_path=None,hps=None):
+    def __init__(self, data_file,vocab,senti_vocab,flag,freq_path=None,hps=None,pkl_path=None):
         """
         :param data_root:   数据集路径
         """
@@ -188,7 +189,7 @@ class Exampledataset(Dataset):
 
         # self.tfidf_list = creattfidf(news_lists=self.news_list)
         # TODO: tfidf data is pre-computed and imported directly to dataset. should be more flexible
-        with open("./pkldata/sport_tfidf.pkl",'rb') as f:
+        with open(pkl_path,'rb') as f:
             self.w2s_tfidf = pickle.load(f)
         # self.w2s_tfidf = creattfidf(news_lists=self.news_list)
 
@@ -301,13 +302,16 @@ class Exampledataset(Dataset):
         # print(wid2nid,nid2wid)
         N = len(input_pad)
         word_list=[]
+        word_list_len = 100
+        # TODO: need to set the length of word_list properly
         for i in range(N):
             for j in range(len(input_pad[i])):
                 if input_pad[i][j] not in word_list:
                     word_list.append(input_pad[i][j])
-        if len(word_list)<50:
-            for i in range(50-len(word_list)):
+        if len(word_list)<word_list_len: #needs larger
+            for i in range(word_list_len-len(word_list)):
                 word_list.append(0)
+        word_list = word_list[:word_list_len]
         G.add_nodes(N)
         G.ndata["unit"][w_nodes:] = torch.ones(N)
         G.ndata["dtype"][w_nodes:] = torch.ones(N)
@@ -327,7 +331,8 @@ class Exampledataset(Dataset):
             for wid in c.keys():
                 if wid in wid2nid.keys() and self.vocab.id2word(wid) in sent_tfw.keys():
                     tfidf = sent_tfw[self.vocab.id2word(wid)]
-                    tfidf_box = np.round(tfidf * 9)  # box = 10
+                    tfidf_box = np.round(tfidf * 9).astype(int) # box = 10, astype(int) may result in loss of accuracy
+                    # print(tfidf_box)
                     G.add_edges(wid2nid[wid], sent_nid,
                                 data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
                     G.add_edges(sent_nid, wid2nid[wid],
@@ -370,6 +375,7 @@ class Exampledataset(Dataset):
         """
         graph = self.get_graph(index)
         input_pad = graph.enc_sent_input_pad
+        # print(len(input_pad))
         label = graph.label
         time_list = graph.time_list
         w2s_w = self.w2s_tfidf[index]  # 可以准确得到对应的tfidf
@@ -403,7 +409,7 @@ class Exampledataset(Dataset):
                   'for_comment_freq':for_freq+[1],
                   'back_comment_freq':back_freq+[1]}
 
-        return sample, G
+        return sample, G,index
     
 def starattentionmask(length):
     global_mask=\
@@ -427,6 +433,10 @@ def collate_func(batch_dic):
     # graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]  # sent node of graph
     # sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
     # batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
+    samples, graphs, index = map(list,zip(*batch_dic))
+    graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]
+    sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
+    batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
     batch_len=len(batch_dic)
     src_ids_batch = []
     new_ids_batch = []
@@ -438,11 +448,6 @@ def collate_func(batch_dic):
     for_tgt_pad_mask_batch = []
     back_tgt_freq_batch = []
     for_tgt_freq_batch = []
-    graphs = [batch_dic[idx][1] for idx in range(batch_len)]
-    ''''''
-    graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]  # sent node of graph
-    sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
-    batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
     for idx in sorted_index:
         dic = batch_dic[idx][0]
         entity_batch.append(torch.tensor(dic['entity']))

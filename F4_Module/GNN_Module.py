@@ -43,13 +43,14 @@ class MLP(torch.nn.Module):
 
 class GNN_Module(nn.Module):
     """ GAT------>word2sent,sent2word-->sentence-->news embedding-->entity sequence gru-->attention-->prediction"""
-    def __init__(self, hps, embed, entity_news_dict):
+    def __init__(self, hps, embed, entity_news_dict,device):
         """
         :param hps:
         :param embed: word embedding
         :param entity_news_dict: news occur in entity sequence dict
         """
         super().__init__()
+        self.device = device
         self._hps = hps
         self._n_iter = hps['n_iter']# graph 迭代次数
         self._embed = embed
@@ -107,7 +108,7 @@ class GNN_Module(nn.Module):
         self.gru = GRUModel(self.feat_embed_size, self.feat_embed_size * 2,self.feat_embed_size)
         #MLP prediction module
         self.pred = MLP(self.feat_embed_size,self.feat_embed_size*2 ,1)
-
+        # print("GRU INIT FINISHED, ON DEVICE: ", next(self.parameters()).device )
     def forward(self, graph , entity_map):
         """
         :param graph: [batch_size] * DGLGraph
@@ -121,7 +122,7 @@ class GNN_Module(nn.Module):
             entity_map:[entity_num,news seqlen]
         :return: result: [newsnum, 1]
         """
-
+        # print("GRU COMPUTING, ON DEVICE: ", next(self.parameters()).device )
         # word node init
         word_feature = self.set_wnfeature(graph)  # [wnode, embed_size]
         sent_feature = self.n_feature_proj(self.set_snfeature(graph))  # [snode, n_feature_size]#thereis a bug
@@ -136,16 +137,14 @@ class GNN_Module(nn.Module):
             # word -> sent
             sent_state = self.word2sent(graph, word_state, sent_state)
         Nnode_id = graph.filter_nodes(lambda nodes: nodes.data["dtype"] == 2)
-        print(torch.cuda.device_count())
-        print(torch.cuda.is_available())
-        news_state=torch.zeros(len(Nnode_id),self.feat_embed_size).to(torch.device("cuda"))
+        news_state=torch.zeros(len(Nnode_id),self.feat_embed_size).to(self.device)
 
         news_embedding=self.sent2news(graph,sent_state,news_state)
         graph.nodes[Nnode_id].data["news_embedding"] = news_embedding
         newsid2nid,nid2newsid=self.news_id2nid(graph)
 
         entity_seq=self.newsid2embed(graph, entity_map, newsid2nid)
-        entity_seq=entity_seq.to(torch.device("cuda"))
+        entity_seq=entity_seq.to(self.device)
         entity_result,_=self.gru(entity_seq)
 
         '''
@@ -253,7 +252,7 @@ class GNN_Module(nn.Module):
                 nid=Nnode_id_list[i]
                 narray=np.array(news_embedding_list[i])
                 maxpool=np.max(narray, axis=0)
-                graph.nodes[nid].data["news_embedding"] = torch.FloatTensor([maxpool]).to(torch.device("cuda"))
+                graph.nodes[nid].data["news_embedding"] = torch.FloatTensor([maxpool]).to(self.device)
 
         news_embedding=graph.nodes[Nnode_id].data["news_embedding"]
         return news_embedding
@@ -279,7 +278,7 @@ class GNN_Module(nn.Module):
                 nid=Nnode_id_list[i]
                 narray=np.array(news_embedding_list[i])
                 avgpool=narray.mean(axis=0)
-                graph.nodes[nid].data["news_embedding"] = torch.FloatTensor([avgpool]).to(torch.device("cuda"))
+                graph.nodes[nid].data["news_embedding"] = torch.FloatTensor([avgpool]).to(self.device)
 
         news_embedding=graph.nodes[Nnode_id].data["news_embedding"]
         return news_embedding
@@ -313,7 +312,7 @@ class GNN_Module(nn.Module):
                 nid=Nnode_id_list[i]
                 attention_newsiemb=np.array(news_attention_list[i])
                 atensor=torch.FloatTensor([attention_newsiemb],device="cpu")
-                atensor=atensor.to(torch.device("cuda:0"))
+                atensor=atensor.to(self.device)
                 graph.nodes[nid].data["news_embedding"] = atensor
 
         news_embedding=graph.nodes[Nnode_id].data["news_embedding"]
@@ -328,7 +327,7 @@ class GNN_Module(nn.Module):
                 if entity_map_list[i][j]!=0:
                     nid=newsid2nid[entity_map_list[i][j]]
                     ten=torch.FloatTensor([entity_result_list[i][j]])
-                    graph.nodes[nid].data["news_embedding"] = torch.FloatTensor([entity_result_list[i][j]]).to(torch.device("cuda"))
+                    graph.nodes[nid].data["news_embedding"] = torch.FloatTensor([entity_result_list[i][j]]).to(self.device)
         Nnode_id = graph.filter_nodes(lambda nodes: nodes.data["dtype"] == 2)
         news_embedding=graph.nodes[Nnode_id].data["news_embedding"]
         return news_embedding

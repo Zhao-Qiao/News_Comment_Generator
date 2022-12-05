@@ -58,7 +58,7 @@ class Vocab(object):
     def id2word(self, word_id):
         """Returns the word (string) corresponding to an id (integer)."""
         if word_id not in self._id_to_word:
-            raise ValueError(w)
+            raise ValueError(word_id)
         return self._id_to_word[word_id]
 
     def size(self):

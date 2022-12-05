@@ -1,58 +1,57 @@
+
 import warnings
 warnings.filterwarnings('ignore')  # 警告扰人，手动封存
 import torch
-from model.dialogue_dataset import Exampledataset,collate_func
-from model.transformer_base import transformer_base,S2sTransformer
-from model.vocabulary import Vocab
-from utils.loss import seq_generation_loss
-from utils._utils import reset_log
+from DataLoader_s2s import Exampledataset,collate_func
+from model import S2sTransformer,seq_generation_loss
+from AF_LSTM import AF_LSTM
+from utils.vocabulary import Vocab
 import logging
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import textstat
-from model.embedding import Word_Embedding
+from utils.Word2Vec_emb import Word_Embedding
 from rouge import Rouge
-import json
-import os
+import json, os, math
 import numpy as np
 import torch.nn.functional as F
-import math
 import heapq
 from torch.nn.utils.rnn import pad_sequence
 from nltk.translate import bleu_score
+from tools import jsonloader
 os.environ['CUDA_VISIBLE_DEVICES'] ='5'
 
 def preprocess(or_query):
     return or_query.strip().replace(' ','')
-def jsonloader(filename):
-    # 将数据加载到一个列表中
-    file = open(filename, 'r', encoding='utf-8')
-    entity_list=[]#实体
-    news_list = []#新闻
-    date_list = []#日期
-    vnames_list = []#新闻所含实体列表
-    label_list=[]#评论
-    title_list=[]#标题
-    label_score_list=[]#评论情感分数
-    for line in file.readlines():
-        pop_dict = json.loads(line)
-        entity=pop_dict['entity']
-        date = pop_dict['date']
-        news = pop_dict['news']
-        vnames = pop_dict['v_names']
-        label=pop_dict['label']
-        title=pop_dict['title']
-        #label_score=pop_dict['label_score']
-
-
-        news_list.append(news)
-        date_list.append(date)
-        entity_list.append(entity)
-        vnames_list.append(vnames)
-        label_list.append(label)
-        title_list.append(title)
-        #label_score_list.append(label_score)
-    return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list
+# def jsonloader(filename):
+#     # 将数据加载到一个列表中
+#     file = open(filename, 'r', encoding='utf-8')
+#     entity_list=[]#实体
+#     news_list = []#新闻
+#     date_list = []#日期
+#     vnames_list = []#新闻所含实体列表
+#     label_list=[]#评论
+#     title_list=[]#标题
+#     label_score_list=[]#评论情感分数
+#     for line in file.readlines():
+#         pop_dict = json.loads(line)
+#         entity=pop_dict['entity']
+#         date = pop_dict['date']
+#         news = pop_dict['news']
+#         vnames = pop_dict['v_names']
+#         label=pop_dict['label']
+#         title=pop_dict['title']
+#         #label_score=pop_dict['label_score']
+#
+#
+#         news_list.append(news)
+#         date_list.append(date)
+#         entity_list.append(entity)
+#         vnames_list.append(vnames)
+#         label_list.append(label)
+#         title_list.append(title)
+#         #label_score_list.append(label_score)
+#     return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list
 
 def searchcomment(label_list):
     cur_label_list=[]

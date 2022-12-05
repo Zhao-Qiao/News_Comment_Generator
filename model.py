@@ -161,11 +161,11 @@ class LearnedPositionEncoding(nn.Embedding):
 
 class S2sTransformer(nn.Module):
     def __init__(self,vocab,senti_model=None, word_emb_dim = 128,nhead = 4,pretrained_weight=None,num_encoder_layers=12,
-                 num_decoder_layers=6,dim_feedforward=2048,dropout=0.1,entity_news_dict=None,hps = None):
+                 num_decoder_layers=6,dim_feedforward=2048,dropout=0.1,entity_news_dict=None,hps = None, device='cpu'):
         super(S2sTransformer,self).__init__()
         # embedding 层
         self.vocab_size=vocab.size()
-        
+        self.device = device
         if pretrained_weight is None:
             self.embedding = nn.Embedding(vocab.size(), word_emb_dim)
         else:
@@ -187,9 +187,10 @@ class S2sTransformer(nn.Module):
         # 加载情感分析模型
         self.senti_model = senti_model
         self.entity_news_dict = entity_news_dict
-        if self.senti_model == 'F4_Module':
-            self.senti_model = GNN_Module(hps=hps,embed=self.embedding,entity_news_dict=self.entity_news_dict)
-        
+        # if self.senti_model == 'F4_Module':
+            # self.senti_model = GNN_Module(hps=hps,embed=self.embedding,entity_news_dict=self.entity_news_dict,device=self.device)
+        # else:
+             # self.senti_model = AF_LSTM()
         self.memory_linear = nn.Linear(2*word_emb_dim,word_emb_dim)
         self.memory_linear_dropout = nn.Dropout(p=0.1)  
 
@@ -234,12 +235,16 @@ class S2sTransformer(nn.Module):
 
         # 内容编码结果
         content_memory = self.encoder(src, mask=src_mask, src_key_padding_mask=src_pad_mask)
-        #print(content_memory.shape)
-        
+        # print(content_memory.shape)
         # 情感编码结果
-        # _, senti_memory = self.senti_model(new_list, new_mask, entity, gpunum)
-        _,senti_memory = self.senti_model(G,entity_map)
-        #print(senti_memory.shape)
+        # print(content_memory.device)
+        _, senti_memory = self.senti_model(new_list, new_mask, entity, gpunum)
+        # _,senti_memory = self.senti_model(G,entity_map)
+        # print(next(self.senti_model.parameters()).device) : on cuda, but why slow as f?????????
+        # replace senti_model's output with all zero matrix
+        # senti_memory = torch.zeros([1,128]).to(content_memory.device)
+        # print(senti_memory.device)
+        # print(senti_memory.shape)
         
         # 扩展维度
         senti_memory = torch.repeat_interleave(senti_memory.unsqueeze(0), repeats=content_memory.shape[0], dim=0)

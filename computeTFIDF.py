@@ -111,4 +111,5 @@ w2s_tfidf = creattfidf(news_lists=news_sent_list)
 with open(dst_path,'wb') as f:
     pickle.dump(w2s_tfidf,f)
     f.close()
+print('ALAS BREAK')
 print("Done.")
