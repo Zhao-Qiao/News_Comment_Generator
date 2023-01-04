@@ -11,17 +11,16 @@ import torch
 import torch.nn as nn
 from torch.optim.lr_scheduler import StepLR
 from DataLoader_s2s import Exampledataset,collate_func
-from model import S2sTransformer,seq_generation_loss
-from AF_LSTM import AF_LSTM
+# from model import S2sTransformer,seq_generation_loss
+# from transformerEncoderDecoder import S2sTransformer, seq_generation_loss
+# from LSTM_EncoderDecoder_Albert import S2sLSTM, seq_generation_loss
+from LSTM_EncoderDecoder import S2sLSTM, seq_generation_loss
 from utils.vocabulary import Vocab
 import numpy as np
 import json
-import dgl
-from F4_Module.GNN_Module import GNN_Module
-
+import matplotlib.pyplot as plt
 # import torch.multiprocessing
 # torch.multiprocessing.set_sharing_strategy('file_system')
-# conda TODO: reorganize the code structure of F4 Module, update interface, replace "hps"
 def get_entity_list(entity_file_path):
     data = []
     with open(entity_file_path, 'r') as f:
@@ -30,7 +29,7 @@ def get_entity_list(entity_file_path):
         f.close()
     return data
 def creat_entitydict(entity_list,vocab):
-    # TODO : result error: entities are usually consists of more than 2 words, therefore they are often not included in the vocab
+    # FIXED: TODO : result error: entities are usually consists of more than 2 words, therefore they are often not included in the vocab
     entity_dict = {}
     entity_new_dict = {}
     index=0
@@ -42,7 +41,6 @@ def creat_entitydict(entity_list,vocab):
 
 def creat_entitymap(G,vocab,entity_dict,entseqlen):
     # TODO: fix bug: all entitiy maps are [0,0,0,0,0]
-    # TODO: go check if Graph G is properly constructed? node attributes, features, and etc
     Nnode_id = G.filter_nodes(lambda nodes: nodes.data["dtype"] == 2).tolist()
     entity_map = []
     newsid2nid={}
@@ -86,8 +84,7 @@ def creat_entitymap(G,vocab,entity_dict,entseqlen):
     batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
     return batched_graph, [index[idx] for idx in sorted_index]
 
-
-def Train(args,hps):
+def Train(args):
     train_path = args['trainset_path']
     dev_path   = args['validset_path']
     vocab_path = args['vocab_path']
@@ -149,7 +146,7 @@ def Train(args,hps):
     logger.info('learning rate:%f' % (lr))
     logger.info('end epoch:%d' % (end_epoch))
 
-    #加载生成词典
+    #加载生成词典w
     vocab_list=[]
     for line in open(vocab_path, "r"):
         vocab_list.append(line[:-1])
@@ -169,7 +166,7 @@ def Train(args,hps):
     # 创建sentivocab类
     senti_vocab = Vocab(vocab_list2, senti_vocab_len)
 
-    trainset = Exampledataset(train_path, vocab,senti_vocab, "train",freq_path,hps=hps,pkl_path=hps['pkl_path'])
+    trainset = Exampledataset(train_path, vocab,senti_vocab, "train",freq_path,pkl_path=args['pkl_path'])
 
     print("训练集样本数：%d"%(trainset.__len__()))
     logger.info("训练集样本数：%d"%(trainset.__len__()))
@@ -211,17 +208,12 @@ def Train(args,hps):
     embed_for_gnn = torch.nn.Embedding(vocab.size(), word_emb_dim).to(device)
     ## end of shits
     # 模型上GPU，加载情感模型
-    # GNN_model = GNN_Module(hps=hps, embed=embed_for_gnn, entity_news_dict=entity_news_dict)
-    # GNN_model.to(device)
-    AFLSTM_model = AF_LSTM(senti_vocab, ifNorm=True, num_layers=1, pretrained_embeddings=senti_pretrained_weight)
-    AFLSTM_model.load_state_dict(torch.load(args['senti_model_path']))
-    print("loading Sentiment analysis model "+args['senti_model_path']+"...")
-    print("Successfully load the Sentiment analysis model completed by pre training!")
-    AFLSTM_model.to(device)
     pretrained_weight = None
-    # model = S2sTransformer(vocab=vocab, senti_model = 'F4_Module', word_emb_dim = word_emb_dim, nhead = nheads, pretrained_weight = pretrained_weight, entity_news_dict=entity_news_dict, hps=hps,device=device)
-    model = S2sTransformer(vocab=vocab, senti_model=AFLSTM_model, word_emb_dim=word_emb_dim, nhead=nheads,
-                           pretrained_weight=pretrained_weight, entity_news_dict=entity_news_dict, hps=hps)
+    # model = S2sLSTM(vocab=vocab , word_emb_dim=word_emb_dim, nhead=nheads,
+    #                        pretrained_weight=pretrained_weight, device=device)
+    model = S2sLSTM(vocab=vocab, senti_model = 'Albert', word_emb_dim = word_emb_dim, nhead = nheads, pretrained_weight = pretrained_weight, device=device)
+    # model = S2sTransformer(vocab=vocab, senti_model=AFLSTM_model, word_emb_dim=word_emb_dim, nhead=nheads,768
+    #                        pretrained_weight=pretrained_weight, entity_news_dict=entity_news_dict, hps=hps)
     model.to(device)
     device_ids = range(torch.cuda.device_count())
 
@@ -255,10 +247,15 @@ def Train(args,hps):
         local_steps_cnt=0
         #########   train ###########
         print ('start training!')
+        loss_list = []
+        batch_list = []
+        plt.figure()
+        plt.ion()
         for batch_idx, batch_pair in tqdm(enumerate(train_loader),
                                      total=int(len(train_loader.dataset) / batch_size) + 1):
             batch = batch_pair[0]
-            G= batch_pair[1]
+            tokenized_ids = batch_pair[1]
+            tokenized_ids = tokenized_ids.to(device)
             src_batch, \
             back_tgt_batch, \
             for_tgt_batch, \
@@ -274,7 +271,7 @@ def Train(args,hps):
             for_tgt_pos_batch , \
             new_ids_batch , \
             new_ids_mask_batch , \
-            entity_batch = \
+            entity_batch  =\
                 batch['src_ids'], \
                 batch['back_tgt_ids'], \
                 batch['for_tgt_ids'], \
@@ -290,9 +287,8 @@ def Train(args,hps):
                 batch['for_tgt_pos'], \
                 batch['new_ids'], \
                 batch['new_ids_mask'], \
-                batch['entity']
+                batch['entity'], \
 
-            G = G.to(device)
             src_batch = src_batch.to(device)
             back_tgt_batch = back_tgt_batch.to(device)
             for_tgt_batch = for_tgt_batch.to(device)
@@ -309,11 +305,6 @@ def Train(args,hps):
             new_ids_batch = new_ids_batch.to(device)
             new_ids_mask_batch = new_ids_mask_batch.to(device)
             entity_batch = entity_batch.to(device)
-
-
-            entity_map = creat_entitymap(G, vocab, entity_dict, ent_seq_len)
-            entity_map = torch.LongTensor(entity_map).to(device)
-            #print("tgt_batch：",tgt_batch)
             model.zero_grad()
 
             # 不采用稀疏注意力矩阵计算
@@ -332,8 +323,9 @@ def Train(args,hps):
                                        entity = entity_batch,
                                        memory_mask=None,
                                        gpunum = int(devices),
-                                       G=G,
-                                       entity_map = entity_map)
+                                       tokenizer_id = tokenized_ids,
+
+                                       )
             else:
                 for_out,back_out=model(src_ids = src_batch,
                                        back_tgt_ids = back_tgt_batch,
@@ -349,8 +341,7 @@ def Train(args,hps):
                                        entity = entity_batch,
                                        memory_mask=None,
                                        gpunum = int(devices),
-                                       G=G,
-                                       entity_map = entity_map)
+                                       tokenizer_id=tokenized_ids)
             loss = criterion(for_out,back_out,
                              back_tgt_batch,
                              for_tgt_batch,
@@ -366,10 +357,13 @@ def Train(args,hps):
             local_steps_cnt+=1
             loss_tr += loss.item()
 
+            # loss_list.append(loss.item())
+            # batch_list.append(batch_idx)
             if batch_idx % loss_check_freq == 0:
                 print('batch:%d' % (batch_idx))
                 print('loss:%f' % (loss.item()))
-            
+                loss_list.append(loss.item())
+                batch_list.append(batch_idx)
             if steps_cnt%check_steps == 0:
                 loss_tr  /= local_steps_cnt
                 print('trainset loss:%f' % (loss_tr))
@@ -384,9 +378,16 @@ def Train(args,hps):
 
             if steps_cnt%save_steps==0:
                 logger.info('match save steps,Checkpoint Saving...')
-                torch.save(model.state_dict(), "./sport_ckpt/GModel_steps_"+str(steps_cnt)+'.pkl')
-                #model.saveAFLSTM("./entertainment_ckpt/AFLSTM_finetune_steps_"+str(steps_cnt)+'.pkl')
-
+                torch.save(model.state_dict(), './sport_ckpt/'+args['Model_Name']+'_step_'+str(steps_cnt)+'.pkl')
+        loss_curv = plt.plot(batch_list, loss_list, 'r', lw=1)
+        plt.title("loss")
+        plt.xlabel('batch')
+        plt.ylabel("loss")
+        plt.show()
+        #save model:
+        logger.info('Save Model Every Epoch')
+        print("Save Model on Epoch"+str(epoch))
+        torch.save(model.state_dict(), './sport_ckpt/' +args['Model_Name']+'_Epochs_'+str(epoch)+'.pkl')
         if lr_descent:
             new_lr = max(minlr, lr / (epoch + 1))
             for param_group in list(optim.param_groups):
@@ -396,6 +397,7 @@ def Train(args,hps):
 if __name__ == "__main__":
     datasetname = "sport"
     args={
+        "Model_Name":"LSTM",
         # 数据文件路径
         'trainset_path':"./data/generate_data/"+ datasetname + "_data/"+ datasetname + "_train_49500_2gram.json",
         'validset_path':"./data/generate_data/"+ datasetname + "_data/"+ datasetname + "_test_49500_2gram.json",
@@ -425,8 +427,8 @@ if __name__ == "__main__":
         # only test
         'model_resume_name':'',
         # 训练batch参数
-        'batch_size':16,
-        'end_epoch':200,
+        'batch_size':12,
+        'end_epoch':50,
         'check_steps':1000,
         # 模型保存间隔步数
         'save_steps':50000,
@@ -455,41 +457,5 @@ if __name__ == "__main__":
         'devices':'1',
         'ent_seq_len': 5, #maximum length of entity enquence
     }
-    hps = {
-        'lr': 1e-4,
-        'n_iter': 5,
-        'word_embed_dim':128,
-        'feature_embed_size':128,
-        'feat_embed_size': 128,
-        'n_feature_size': 128,
-        'hidden_size': 128,
-        'atten_dropout_prob':0.1,
-        'n_head':4,
-        'ffn_inner_hidden_size':1024,
-        'ffn_dropout_prob':0.1,
-        'sent_max_len':100,
-        'embed_size':128, #used in sentence encoder, should be equal to word_embed_dim? idk
-        'doc_max_timesteps':10,
-        'lstm_hidden_state':128,
-        'lstm_layers':2,
-        'bidirectional':True,
-        # 训练batch参数
-        'batch_size': 1,
-        'end_epoch': 200,
-        'check_steps': 1000,
-        # 模型保存间隔步数
-        'save_steps': 50000,
-        'lr': 1e-4,
-        # 输出loss间隔步数
-        'loss_check': 300,
-        # only test
-        'version_info': 'use pretrained embed , encode_layers=6 model.train() revise',
-        'GPU_ids': '1',
-        # 学习率递减
-        'lr_descent': False,
-        # 最小学习率
-        'minlr': 5e-5,
-
-    }
     
-    Train(args,hps)
+    Train(args)

@@ -1,57 +1,63 @@
-
 import warnings
 warnings.filterwarnings('ignore')  # 警告扰人，手动封存
 import torch
-from DataLoader_s2s import Exampledataset,collate_func
-from model import S2sTransformer,seq_generation_loss
-from AF_LSTM import AF_LSTM
+#from model.dialogue_dataset import Exampledataset,collate_func
+#from model.transformer_base import transformer_base,S2sTransformer
 from utils.vocabulary import Vocab
+#from utils.loss import seq_generation_loss
+# from model import S2sTransformer,seq_generation_loss
+# from transformerEncoderDecoder import S2sTransformer,seq_generation_loss
+# from LSTM_EncoderDecoder_Albert import S2sLSTM, seq_generation_loss
+from LSTM_EncoderDecoder import S2sLSTM, seq_generation_loss
+#from utils._utils import reset_log
 import logging
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 import textstat
 from utils.Word2Vec_emb import Word_Embedding
 from rouge import Rouge
-import json, os, math
+import json
+import os
 import numpy as np
 import torch.nn.functional as F
+import math
 import heapq
 from torch.nn.utils.rnn import pad_sequence
 from nltk.translate import bleu_score
-from tools import jsonloader
+from transformers import AutoTokenizer
 os.environ['CUDA_VISIBLE_DEVICES'] ='5'
 
 def preprocess(or_query):
     return or_query.strip().replace(' ','')
-# def jsonloader(filename):
-#     # 将数据加载到一个列表中
-#     file = open(filename, 'r', encoding='utf-8')
-#     entity_list=[]#实体
-#     news_list = []#新闻
-#     date_list = []#日期
-#     vnames_list = []#新闻所含实体列表
-#     label_list=[]#评论
-#     title_list=[]#标题
-#     label_score_list=[]#评论情感分数
-#     for line in file.readlines():
-#         pop_dict = json.loads(line)
-#         entity=pop_dict['entity']
-#         date = pop_dict['date']
-#         news = pop_dict['news']
-#         vnames = pop_dict['v_names']
-#         label=pop_dict['label']
-#         title=pop_dict['title']
-#         #label_score=pop_dict['label_score']
-#
-#
-#         news_list.append(news)
-#         date_list.append(date)
-#         entity_list.append(entity)
-#         vnames_list.append(vnames)
-#         label_list.append(label)
-#         title_list.append(title)
-#         #label_score_list.append(label_score)
-#     return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list
+def jsonloader(filename):
+    # 将数据加载到一个列表中
+    file = open(filename, 'r', encoding='utf-8')
+    entity_list=[]#实体
+    news_list = []#新闻
+    date_list = []#日期
+    vnames_list = []#新闻所含实体列表
+    label_list=[]#评论
+    title_list=[]#标题
+    label_score_list=[]#评论情感分数
+    for line in file.readlines():
+        pop_dict = json.loads(line)
+        entity=pop_dict['entity']
+        date = pop_dict['date']
+        news = pop_dict['news']
+        vnames = pop_dict['v_names']
+        label=pop_dict['label']
+        title=pop_dict['title']
+        #label_score=pop_dict['label_score']
+
+
+        news_list.append(news)
+        date_list.append(date)
+        entity_list.append(entity)
+        vnames_list.append(vnames)
+        label_list.append(label)
+        title_list.append(title)
+        #label_score_list.append(label_score)
+    return entity_list,news_list, date_list, vnames_list,label_list,label_score_list,title_list
 
 def searchcomment(label_list):
     cur_label_list=[]
@@ -153,26 +159,30 @@ class beamheap:
     def __init__(self,vocab,model_ckpt_path,model_params,pretrained_weight,Beamsize,backaerfa,foraerfa):
         self.vocab=vocab
         #self.model=transformer_base(self.vocab,model_params['embed_dim'],model_params['nheads'],pretrained_weight)
-        self.model=S2sTransformer(self.vocab,model_params['embed_dim'],model_params['nheads'],pretrained_weight)
+        self.model=S2sLSTM(vocab=self.vocab,senti_model='Albert',word_emb_dim=model_params['embed_dim'],nhead=model_params['nheads'],pretrained_weight=pretrained_weight)
         self.model.load_state_dict(torch.load(model_ckpt_path))
         self.Beamsize=Beamsize
         self.backaerfa=backaerfa#长度惩罚因子
         self.foraerfa=foraerfa
-    def back_decode(self,query,tgt_ids):
+        self.tokenizer = AutoTokenizer.from_pretrained("techthiyanes/chinese_sentiment", cache_dir="./pretrained_model")
+    def back_decode(self,query,tgt_ids,full_sent):
+        #query title
         src_ids=[vocab.word2id(word) for word in query]
         src = torch.tensor(src_ids).unsqueeze(0)
+        news_id = torch.tensor(self.tokenizer(news_full,padding=True, truncation=True, max_length=128)['input_ids']).unsqueeze(0)
         self.model.eval()
         #attention_mask=starattentionmask(src.size(1))
         tgt=torch.tensor(tgt_ids).unsqueeze(0)
-        _,back_out=self.model(src,for_tgt_ids=tgt,back_tgt_ids=tgt)
+        _,back_out=self.model(src,for_tgt_ids=tgt,back_tgt_ids=tgt,tokenizer_id=news_id)
         return back_out # 输出维度维度是V*1 ，代表每个词出现的概率
-    def for_decode(self,query,tgt_ids):
+    def for_decode(self,query,tgt_ids,full_sent):
         src_ids=[vocab.word2id(word) for word in query]
         src = torch.tensor(src_ids).unsqueeze(0)
+        news_id = torch.tensor(self.tokenizer(news_full, padding=True, truncation=True, max_length=128)['input_ids']).unsqueeze(0)
         self.model.eval()
         #attention_mask=starattentionmask(src.size(1))
         tgt=torch.tensor(tgt_ids).unsqueeze(0)
-        for_out,_=self.model(src,for_tgt_ids=tgt,back_tgt_ids=tgt)
+        for_out,_=self.model(src,for_tgt_ids=tgt,back_tgt_ids=tgt,tokenizer_id=news_id)
         return for_out # 输出维度维度是V*1 ，代表每个词出现的概率
 
     def fun(self,que,x,dir=None):# 这块维持一个大小为k（Beam search的宽度）的小顶堆，使得复杂度降到log(k)
@@ -208,7 +218,7 @@ class beam_search_decoder:
         self.beamsize = beamheap.Beamsize
         self.numda = numda
         self.minlen = minlen
-    def back_forward(self,src,entity):# 模型输入为初始向量，一般是编码器的输出
+    def back_forward(self,src,entity, news_full):# 模型输入为初始向量，一般是编码器的输出
         beams = [([self.vocab.word2id(entity)],1.0)]# 首先把初始向量填入beam中 第一值是输出的序列列表，第二值是该序列出现的概率
         beamsfreq=[1 for _ in range(self.vocab.size())]
         for itername in range(self.maxlen):# 自回归式迭代生成输出序列 最大输出序列长度为max_len
@@ -217,7 +227,7 @@ class beam_search_decoder:
                 if x[-1]==2:#BOS id = 2 如果已经输出了开始字符 则该序列直接用于更新，不再进行解码
                     que = self.topk(que,(x,score),'back')
                 else:
-                    output = self.back_decode(src,x) # 以Beam中已生成的序列为输入，生成下一token的概率分布
+                    output = self.back_decode(src,x,news_full) # 以Beam中已生成的序列为输入，生成下一token的概率分布
                     output = output[-1,0,:]
                     output = F.softmax(output)
                     if self.numda!=0:
@@ -235,7 +245,7 @@ class beam_search_decoder:
                         que = self.topk(que,(x+[wid],score*o_score),'back')# 假设改词为输出的词，那么可以得到一个新的序列以及该序列出现的概率
             beams = que # 更新Beam
         return beams[-1][0]
-    def for_forward(self,src,back_seq):
+    def for_forward(self,src,back_seq, news_full):
         beams = [(back_seq,1.0)]# 首先把初始向量填入beam中 第一值是输出的序列列表，第二值是该序列出现的概率
         beamsfreq=[1 for _ in range(self.vocab.size())]
         for itername in range(self.maxlen):# 自回归式迭代生成输出序列 最大输出序列长度为max_len
@@ -244,7 +254,7 @@ class beam_search_decoder:
                 if x[-1]==3:#EOS id = 3 如果已经输出了结束字符 则该序列直接用于更新，不再进行解码
                     que = self.topk(que,(x,score),'for')
                 else:
-                    output = self.for_decode(src,x) # 以Beam中已生成的序列为输入，生成下一token的概率分布
+                    output = self.for_decode(src,x,news_full) # 以Beam中已生成的序列为输入，生成下一token的概率分布
                     output = output[-1,0,:]
                     output = F.softmax(output)
                     if self.numda!=0:
@@ -265,7 +275,7 @@ class beam_search_decoder:
 if __name__=="__main__":
     vocab_list=[]
     #for line in open("./data/backdata/entertainment_entity_vocab4.txt", "r"):
-    for line in open("./data/generate_data/sport_data/sport_vocab_49500_2gram.txt", "r"):  # 设置文件对象并读取每一行文件
+    for line in open("./data/generate_data/sport_data/sport_vocab_49500_2gram.txt", "r",encoding='utf-8'):  # 设置文件对象并读取每一行文件
         vocab_list.append(line[:-1])
     print("[INFO] vocab_list读取成功！")
     # 创建vocab类
@@ -277,9 +287,12 @@ if __name__=="__main__":
     #ckpt_path='./ckpt/transentity_back300000.pkl'
     # ckpt_path='./ckpt/transback_49_2gram_itf_sport_steps_250000.pkl'
     # ckpt_path='./sport_ckpt/GModel_steps_50000.pkl'
+    ckpt_path = './sport_ckpt/LSTM_Epochs_49.pkl'
+
     embedding_path='./Word2Vec/word_embedding'
     #pretrain_path='data/backdata/pretrained_weight_entertainment_entity_vocab4.npy'
-    pretrain_path='data/generate_data/sport_data/pretrained_weight_sport_vocab_49500_2gram.npy'
+    # pretrain_path='data/sport_data/pretrained_weight_sport_vocab_49500_2gram.npy'
+    pretrain_path='./data/generate_data/sport_data/pretrained_weight_sport_vocab_49500_2gram.npy'
     #test_path='./data/backdata/entertainment_test_entity4.json'
     test_path='./data/generate_data/sport_data/sport_test_49500_2gram.json'
     word_emb_dim=128
@@ -292,6 +305,7 @@ if __name__=="__main__":
         np.save(pretrain_path,pretrained_weight)
         print("save完成")
     pretrained_weight = np.load(pretrain_path)
+    pretrained_weight = None
     print("pretrain_weight load 成功！")
     print("model name",ckpt_path)
     model_params={"embed_dim":128,"nheads":4}
@@ -320,6 +334,7 @@ if __name__=="__main__":
     #label_list=searchcomment(label_list)
     #label_list=changenews2list(label_list)
     print(label_list[0:10])
+    tokenizer = AutoTokenizer.from_pretrained("techthiyanes/chinese_sentiment", cache_dir="./pretrained_model")
     beamsearchheap=beamheap(vocab,ckpt_path,model_params,pretrained_weight,Beamsize,backaerfa,foraerfa)
     beam_search_decode=beam_search_decoder(beamsearchheap,comment_maxlen,numda,minlen)
 
@@ -344,10 +359,11 @@ if __name__=="__main__":
         src=[entity]+title
 
         print('news',i,''.join(src))
-
-        prefix_comment=beam_search_decode.back_forward(src,entity)
+        news_full = ''.join(news)
+        # news_id = torch.tensor(tokenizer(news_full,padding=True, truncation=True, max_length=128)['input_ids'])
+        prefix_comment=beam_search_decode.back_forward(src,entity,news_full)
         prefix_comment=prefix_comment[::-1]
-        complete_comment=beam_search_decode.for_forward(src,prefix_comment)
+        complete_comment=beam_search_decode.for_forward(src,prefix_comment,news_full)
         if complete_comment[-1]!=3:
             complete_comment.append(3)
         complete_comment=[vocab.id2word(cur) for cur in complete_comment]
